@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test-sqlite:
+    name: Tests on SQLite (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: python manage.py makemigrations --check --dry-run
+      - run: pytest -v
+
+  test-mysql:
+    name: Tests on MySQL 8.4
+    runs-on: ubuntu-24.04
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: nfe
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval=5s --health-timeout=3s --health-retries=30
+    env:
+      DB_ENGINE: mysql
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_NAME: nfe
+      DB_USER: root
+      DB_PASSWORD: root
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libmysqlclient-dev
+      - run: pip install -e ".[dev,mysql]"
+      - run: python manage.py migrate --noinput
+      - run: pytest -v
+      - name: Import the sample files with the management command
+        run: |
+          python manage.py import_nfe samples/
+          python manage.py import_nfe samples/ | grep "0 created, 12 duplicates"
+
+  docker:
+    name: Docker image + end-to-end check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --build --wait
+      - name: Health, token and an import through the HTTP API
+        run: |
+          curl -fsS http://localhost:8000/health/
+          docker compose exec -T web python manage.py shell -c "
+          from django.contrib.auth.models import User
+          from rest_framework.authtoken.models import Token
+          user = User.objects.create_user('ci', password='ci-password-123')
+          print(Token.objects.create(user=user).key)" > token.txt
+          TOKEN=$(tail -1 token.txt)
+          curl -fsS -H "Authorization: Token $TOKEN" $(for f in samples/*.xml; do echo "-F files=@$f"; done) \
+            http://localhost:8000/api/imports/ | tee import.json
+          grep -q '"created":12' import.json
+          curl -fsS -H "Authorization: Token $TOKEN" "http://localhost:8000/api/reports/monthly/"
+      - if: failure()
+        run: docker compose logs

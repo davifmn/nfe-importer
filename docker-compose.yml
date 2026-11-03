@@ -1,0 +1,36 @@
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: nfe
+      MYSQL_USER: nfe
+      MYSQL_PASSWORD: ${DB_PASSWORD:-nfe-dev-password}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root-dev-password}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - mysql-data:/var/lib/mysql
+
+  web:
+    build: .
+    environment:
+      DB_ENGINE: mysql
+      DB_HOST: db
+      DB_NAME: nfe
+      DB_USER: nfe
+      DB_PASSWORD: ${DB_PASSWORD:-nfe-dev-password}
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-local-docker-only-change-me}
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1,web
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+volumes:
+  mysql-data:
